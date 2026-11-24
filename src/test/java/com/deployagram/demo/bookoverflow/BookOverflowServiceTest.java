@@ -2,11 +2,17 @@ package com.deployagram.demo.bookoverflow;
 
 import com.deployagram.demo.bookoverflow.avro.BookSuggestionMessage;
 import com.deployagram.demo.bookoverflow.avro.DontForgetMessage;
+import com.deployagram.junit4.Deployagram;
+import com.deployagram.junit4.DeployagramConfig;
+import com.deployagram.junit4.DeployagramConfigEntry;
+import com.deployagram.junit4.DeployagramEnvironmentRule;
+import com.deployagram.junit4.DeployagramRule;
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 
@@ -32,6 +38,15 @@ import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
+@Deployagram(startEnvironment = true, proxyPort = 9080, shareHostPorts = {BOOK_OVERFLOW_PORT, CLASSIC_BOOKS_PORT})
+@DeployagramConfig({
+        @DeployagramConfigEntry(key = "proxy.namesOfSourceApps.BookOverflow/suggestion", value = "AppA"),
+        @DeployagramConfigEntry(key = "proxy.proxiedAppNames.BookOverflow/suggestion", value = "BookOverflow"),
+        @DeployagramConfigEntry(key = "proxy.proxiedApps.BookOverflow/suggestion", value = "http://host.testcontainers.internal:8081/BookOverflow/suggestion"),
+        @DeployagramConfigEntry(key = "proxy.namesOfSourceApps.ClassicBooks/random", value = "BookOverflow"),
+        @DeployagramConfigEntry(key = "proxy.proxiedAppNames.ClassicBooks/random", value = "ClassicBooks"),
+        @DeployagramConfigEntry(key = "proxy.proxiedApps.ClassicBooks/random", value = "http://host.testcontainers.internal:9050/ClassicBooks/random")
+})
 public class BookOverflowServiceTest {
 
     private static final String EMAIL_ADDRESS = "test@deployagram.com";
@@ -50,8 +65,14 @@ public class BookOverflowServiceTest {
     private static BookOverflowServer bookOverflow;
     private static KafkaConsumer<String, DontForgetMessage> suggestions;
 
+    @ClassRule
+    public static final DeployagramEnvironmentRule environment = new DeployagramEnvironmentRule();
+
     @Rule
     public WireMockRule classicBooks = new WireMockRule(CLASSIC_BOOKS_PORT);
+
+    @Rule
+    public DeployagramRule deployagram = new DeployagramRule();
 
     private Response response;
 
@@ -59,7 +80,8 @@ public class BookOverflowServiceTest {
     public static void startKafkaAndBookOverflow() throws IOException {
         kafka = new KafkaSchemaRegistry();
         kafka.start();
-        bookOverflow = new BookOverflowServer(BOOK_OVERFLOW_PORT, "http://localhost:" + CLASSIC_BOOKS_PORT, kafka.suggestionsProducer());
+        // BookOverflow calls ClassicBooks through the Proxy, which forwards to WireMock.
+        bookOverflow = new BookOverflowServer(BOOK_OVERFLOW_PORT, "http://localhost:" + DeployagramStack.proxyPort(), kafka.suggestionsProducer());
         bookOverflow.start();
         suggestions = kafka.newSuggestionsConsumer();
         suggestions.subscribe(Collections.singletonList(SUGGESTIONS_TOPIC));
@@ -99,11 +121,11 @@ public class BookOverflowServiceTest {
     }
 
     private void whenTheSuggestionIsRequestedForAnEmailAddress() throws IOException {
-        response = call(BOOK_OVERFLOW_PORT, BOOK_OVERFLOW_SUGGESTION_PATH + "?email=" + EMAIL_ADDRESS);
+        response = call(DeployagramStack.proxyPort(), BOOK_OVERFLOW_SUGGESTION_PATH + "?email=" + EMAIL_ADDRESS);
     }
 
     private void whenTheSuggestionIsRequestedWithoutAnEmailAddress() throws IOException {
-        response = call(BOOK_OVERFLOW_PORT, BOOK_OVERFLOW_SUGGESTION_PATH);
+        response = call(DeployagramStack.proxyPort(), BOOK_OVERFLOW_SUGGESTION_PATH);
     }
 
     private void thenTheBookIsReturned() {
